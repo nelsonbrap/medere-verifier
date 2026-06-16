@@ -112,7 +112,7 @@ function render(res, err) {
       (res.valid ? '✅ Recibo AUTÊNTICO e ÍNTEGRO' : '❌ Recibo NÃO verificado — não confie nele') + '</div>' +
     stepsHtml +
     '<h2>Conteúdo consentido (núcleo assinado)</h2><table>' + fields + '</table>' +
-    '<p class="sub">A titularidade (qual e-mail) é o HMAC <code>titular_hash</code>; só quem tem o segredo do tenant — ou o próprio titular com seu e-mail — confirma a quem pertence. A autenticidade e a integridade acima não dependem disso.</p>';
+    '<p class="sub">A titularidade é o pseudônimo <code>titular_hash</code> = <code>sha256(e-mail)</code>: quem tem o e-mail recomputa o SHA-256 e confirma a quem pertence — sem segredo nenhum. A autenticidade e a integridade acima não dependem disso.</p>';
 }
 
 document.getElementById('loadKey').addEventListener('click', async () => {
