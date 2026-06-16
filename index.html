@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Verificador de Recibo de Consentimento — MedereAI</title>
+<!--
+  Verificador INDEPENDENTE de Recibo de Consentimento (Elo 1 — Cadeia de Custódia LGPD).
+  Autocontido: NÃO faz nenhuma chamada de rede. Pode ser hospedado em GitHub Pages/IPFS
+  ou salvo e aberto localmente. O ponto é verificar SEM confiar no operador (MedereAI):
+  você fornece o recibo + a chave pública (publicada de forma independente — cartório/
+  whitepaper) e a verificação roda 100% no seu navegador.
+
+  Verifica:
+   1. canonical_hash == SHA-256(canonical)         (integridade do conteúdo assinado)
+   2. assinatura Ed25519 do canonical, com a chave pública informada  (autoria)
+   Mostra os campos do núcleo para você conferir o que foi consentido.
+
+  Requer um navegador com Web Crypto Ed25519 (Chrome/Edge 137+, Safari 17+, Firefox 129+).
+-->
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    max-width: 820px; margin: 0 auto; padding: 24px; line-height: 1.5; }
+  h1 { font-size: 1.4rem; } h2 { font-size: 1.05rem; margin-top: 1.5rem; }
+  p.sub { opacity: .75; margin-top: -8px; }
+  textarea { width: 100%; min-height: 130px; font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 12px; padding: 10px; border-radius: 8px; border: 1px solid #8884; }
+  button { font-size: 15px; padding: 10px 20px; border-radius: 8px; border: 0;
+    background: #2563eb; color: #fff; cursor: pointer; margin-top: 10px; }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  .result { margin-top: 18px; padding: 16px; border-radius: 10px; font-weight: 600; }
+  .ok { background: #16a34a22; border: 1px solid #16a34a; }
+  .bad { background: #dc262622; border: 1px solid #dc2626; }
+  .warn { background: #d9770622; border: 1px solid #d97706; }
+  table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 13px; }
+  td { padding: 4px 8px; border-bottom: 1px solid #8883; vertical-align: top; }
+  td:first-child { font-weight: 600; white-space: nowrap; opacity: .8; }
+  code { font-family: ui-monospace, monospace; word-break: break-all; }
+  .step { font-size: 13px; margin: 3px 0; }
+</style>
+</head>
+<body>
+  <h1>🔏 Verificador de Recibo de Consentimento</h1>
+  <p class="sub">Independente · roda 100% no seu navegador · não confia no operador.</p>
+
+  <h2>1. Cole o recibo (JSON portável)</h2>
+  <textarea id="receipt" placeholder='{"canonical":"{...}","signature":"base64...","canonical_hash":"hex...","key_id":"ed25519-..."}'></textarea>
+
+  <h2>2. Chave pública (SPKI PEM)</h2>
+  <p class="sub">Confira que é a chave do <code>key_id</code> do recibo. <a href="public-key.pem" target="_blank">Baixar chave oficial</a> · <button id="loadKey" style="font-size:12px;padding:2px 8px;display:inline;">carregar da origem</button></p>
+  <textarea id="pubkey" placeholder="-----BEGIN PUBLIC KEY-----&#10;...&#10;-----END PUBLIC KEY-----"></textarea>
+
+  <button id="btn">Verificar</button>
+  <div id="out"></div>
+
+<script>
+"use strict";
+
+function b64ToBytes(b64) { return Uint8Array.from(atob(b64.replace(/\s+/g, '')), c => c.charCodeAt(0)); }
+function pemToBytes(pem) {
+  const b64 = pem.replace(/-----[^-]+-----/g, '').replace(/\s+/g, '');
+  if (!b64) throw new Error('chave pública vazia');
+  return b64ToBytes(b64);
+}
+async function sha256hex(str) {
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str));
+  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+// Núcleo da verificação — idêntico ao verifyCanonical do servidor (cripto, sem confiar nele).
+async function verifyReceipt(receipt, pubkeyPem) {
+  if (!receipt.canonical || !receipt.signature) {
+    throw new Error('recibo precisa de "canonical" e "signature"');
+  }
+  const steps = [];
+
+  // 1. Integridade: canonical_hash == SHA-256(canonical)
+  const computedHash = await sha256hex(receipt.canonical);
+  const hashOk = !receipt.canonical_hash || receipt.canonical_hash === computedHash;
+  steps.push({ label: 'canonical_hash = SHA-256(canonical)', ok: hashOk,
+    detail: receipt.canonical_hash ? (hashOk ? 'confere' : 'NÃO confere') : 'não informado (calculado: ' + computedHash.slice(0, 16) + '…)' });
+
+  // 2. Assinatura Ed25519 do canonical com a chave pública informada
+  if (!crypto.subtle || !crypto.subtle.importKey) throw new Error('Web Crypto indisponível');
+  let pubKey;
+  try {
+    pubKey = await crypto.subtle.importKey('spki', pemToBytes(pubkeyPem), { name: 'Ed25519' }, false, ['verify']);
+  } catch (e) {
+    throw new Error('navegador sem suporte a Ed25519 ou chave inválida (' + e.message + ')');
+  }
+  const sigOk = await crypto.subtle.verify({ name: 'Ed25519' }, pubKey,
+    b64ToBytes(receipt.signature), new TextEncoder().encode(receipt.canonical));
+  steps.push({ label: 'assinatura Ed25519 do canonical', ok: sigOk, detail: sigOk ? 'válida' : 'INVÁLIDA' });
+
+  return { valid: hashOk && sigOk, steps, core: JSON.parse(receipt.canonical) };
+}
+
+function render(res, err) {
+  const out = document.getElementById('out');
+  if (err) { out.innerHTML = '<div class="result bad">❌ Erro: ' + err + '</div>'; return; }
+  const stepsHtml = res.steps.map(s =>
+    '<div class="step">' + (s.ok ? '✅' : '❌') + ' ' + s.label + ' — ' + s.detail + '</div>').join('');
+  const c = res.core;
+  const fields = ['version','tipo','tenant_id','titular_hash','recibo_origem_id','finalidades','base_legal',
+    'consentimento_explicito_ia','emitido_em','expira_em','key_id','prev_hash']
+    .filter(k => c[k] !== undefined)
+    .map(k => '<tr><td>' + k + '</td><td><code>' + (typeof c[k] === 'object' ? JSON.stringify(c[k]) : String(c[k])) + '</code></td></tr>').join('');
+  out.innerHTML =
+    '<div class="result ' + (res.valid ? 'ok' : 'bad') + '">' +
+      (res.valid ? '✅ Recibo AUTÊNTICO e ÍNTEGRO' : '❌ Recibo NÃO verificado — não confie nele') + '</div>' +
+    stepsHtml +
+    '<h2>Conteúdo consentido (núcleo assinado)</h2><table>' + fields + '</table>' +
+    '<p class="sub">A titularidade (qual e-mail) é o HMAC <code>titular_hash</code>; só quem tem o segredo do tenant — ou o próprio titular com seu e-mail — confirma a quem pertence. A autenticidade e a integridade acima não dependem disso.</p>';
+}
+
+document.getElementById('loadKey').addEventListener('click', async () => {
+  try {
+    const r = await fetch('public-key.pem');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const pem = (await r.text()).trim();
+    document.getElementById('pubkey').value = pem;
+    document.getElementById('out').innerHTML = '<div class="result ok">Chave pública carregada</div>';
+  } catch (e) {
+    document.getElementById('out').innerHTML = '<div class="result bad">Erro ao carregar chave: ' + e.message + '</div>';
+  }
+});
+
+document.getElementById('btn').addEventListener('click', async () => {
+  const out = document.getElementById('out');
+  out.innerHTML = '<div class="result warn">verificando…</div>';
+  try {
+    const receipt = JSON.parse(document.getElementById('receipt').value);
+    const res = await verifyReceipt(receipt, document.getElementById('pubkey').value);
+    render(res);
+  } catch (e) { render(null, e.message); }
+});
+</script>
+</body>
+</html>
